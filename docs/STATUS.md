@@ -3,10 +3,10 @@
 ## VPS (Oracle Cloud, Marseille) ✅ Done
 
 - **Instance**: VM.Standard.E2.1.Micro (AMD), Ubuntu 24.04
-- **Public IP**: 130.110.246.244
+- **Public IP**: <VPS_SERVER_PUBLIC_IP>
 - **WireGuard**: running, listening on UDP 51820, enabled on boot
 - **Peers registered**: T15p (10.100.0.2), MacBook (10.100.0.3)
-- **SSH access**: `ssh -i ops/server-VPS/oracle/vps-ssh-key ubuntu@130.110.246.244`
+- **SSH access**: `ssh -i ops/server-VPS/oracle/vps-ssh-key ubuntu@<VPS_SERVER_PUBLIC_IP>`
 
 ---
 
@@ -31,7 +31,7 @@
 
 ## MacBook (client-macos) ✅ Done
 
-- **WireGuard**: tunnel active, peer = VPS (130.110.246.244:51820)
+- **WireGuard**: tunnel active, peer = VPS (<VPS_SERVER_PUBLIC_IP>:51820)
 - **Internet**: full tunnel (0.0.0.0/0), exit IP = Marseille (VPS)
 - **DNS**: 10.100.0.2 (T15p dnsmasq), working
 - **SSH to T15p**: `ssh as@10.100.0.2`, key-based auth configured

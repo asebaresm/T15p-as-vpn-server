@@ -13,6 +13,11 @@
   - Simplest fallback: keep the VPS as primary relay; if VPS is down, SSH in via the SIM's
     public IP directly (works only if carrier gives a real public IP)
 
+## Reserve VPS Public IP ✅
+
+- Assign a Reserved IP in Oracle Cloud so the VPS IP never changes on instance restart
+- Without this, the IP is ephemeral and could change, breaking WireGuard on T15p and MacBook
+
 ## Disable Password-based SSH
 
 - On T15p: set `PasswordAuthentication no` in `/etc/ssh/sshd_config` and restart sshd
@@ -42,3 +47,11 @@
   NM connection unit so the WAN is up before the server stack starts
 - Risk: if WiFi fails at boot, the service will start without a working WAN — add a
   connectivity check or make the service restart on failure
+
+## Disable any Ubuntu bullshit that may crash the services on the Lenovo
+
+- What the title says
+
+## Setup lenovo-to-lenovo VPN tunnel, so that no IP leaks when connecting to the VPN from the Macbook
+
+- Create the tunnel between two independent machines. The Macbook connects to serving one and its already on the LAN on the other side of the tunnel (VLAN)?

@@ -9,8 +9,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC="$SCRIPT_DIR/../../src/server-Lenovo-T15p"
+ROOT="$SCRIPT_DIR/../.."
+SRC="$ROOT/src/server-Lenovo-T15p"
 BACKUP_DIR="/var/backups/t15p-router"
+
+# Load secrets from .env.local
+ENV_FILE="$ROOT/.env.local"
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "ERROR: $ENV_FILE not found. Copy .env.local.example and fill in the values."
+  exit 1
+fi
+set -a; source "$ENV_FILE"; set +a
+
+if [[ -z "${VPS_SERVER_PUBLIC_IP:-}" ]]; then
+  echo "ERROR: VPS_SERVER_PUBLIC_IP is not set in .env.local"
+  exit 1
+fi
 
 # Saves the original file before we overwrite it.
 # Marks absent files with a sentinel so rollback knows to delete them.
@@ -103,7 +117,7 @@ apt-get update -qq
 apt-get install -y dnsmasq wireguard nftables iw openssh-server
 
 echo "==> Setting up WireGuard..."
-cp "$SRC/wg0.conf" /etc/wireguard/wg0.conf
+sed "s|{{VPS_SERVER_PUBLIC_IP}}|$VPS_SERVER_PUBLIC_IP|g" "$SRC/wg0.conf" > /etc/wireguard/wg0.conf
 chmod 600 /etc/wireguard/wg0.conf
 
 echo "==> Setting up dnsmasq..."

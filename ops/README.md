@@ -60,7 +60,7 @@ Credentials and SSH keys are in `ops/server-VPS/oracle/` (gitignored).
 
 | Component | IP | Role |
 |---|---|---|
-| VPS (`130.110.246.244`) | `10.100.0.1` | WireGuard relay (public endpoint) |
+| VPS (`<VPS_SERVER_PUBLIC_IP>`) | `10.100.0.1` | WireGuard relay (public endpoint) |
 | T15p | `10.100.0.2` | Router + VPN server |
 | MacBook | `10.100.0.3` | Road warrior VPN client |
 | IoT LAN | `192.168.10.0/24` | Devices connected to `Huawey-5` AP |
