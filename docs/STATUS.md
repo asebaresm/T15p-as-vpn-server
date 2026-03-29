@@ -1,10 +1,11 @@
-# Project Status — 2026-03-29
+# Project Status — 2026-03-30
 
 ## VPS (Oracle Cloud, Marseille) ✅ Done
 
 - **Instance**: VM.Standard.E2.1.Micro (AMD), Ubuntu 24.04
 - **Public IP**: <VPS_SERVER_PUBLIC_IP>
 - **WireGuard**: running, listening on UDP 51820, enabled on boot
+- **Role**: relay only — MacBook traffic is forwarded to T15p (policy routing, table 100)
 - **Peers registered**: T15p (10.100.0.2), MacBook (10.100.0.3)
 - **SSH access**: `ssh -i ops/server-VPS/oracle/vps-ssh-key ubuntu@<VPS_SERVER_PUBLIC_IP>`
 
@@ -15,7 +16,7 @@
 - **Mode**: server mode active (`sudo bash ops/server-Lenovo-T15p/mode.sh server`)
 - **WireGuard**: tunnel to VPS up, handshake confirmed
 - **LAN**: enp0s31f6 → MR550, IP 192.168.10.1/24, dnsmasq serving DHCP+DNS
-- **Firewall**: nftables — NAT on wlp0s20f3, SSH + DNS allowed on wg0
+- **Firewall**: nftables — NAT on wlp0s20f3, SSH + DNS allowed on wg0, wg0 → WAN forwarding for double-hop
 - **SSH**: openssh-server installed, key-based auth from MacBook configured
 - **Revert**: `sudo bash ops/server-Lenovo-T15p/install.sh rollback`
 
@@ -32,7 +33,7 @@
 ## MacBook (client-macos) ✅ Done
 
 - **WireGuard**: tunnel active, peer = VPS (<VPS_SERVER_PUBLIC_IP>:51820)
-- **Internet**: full tunnel (0.0.0.0/0), exit IP = Marseille (VPS)
+- **Internet**: full tunnel (0.0.0.0/0), double-hop via T15p — exit IP = apartment
 - **DNS**: 10.100.0.2 (T15p dnsmasq), working
 - **SSH to T15p**: `ssh as@10.100.0.2`, key-based auth configured
 
@@ -41,7 +42,7 @@
 ## End-to-end ✅ All tested
 
 - [x] T15p in server mode: MR550 gets DHCP, IoT devices reach internet
-- [x] MacBook VPN → VPS → internet (exit IP Marseille)
+- [x] MacBook VPN → VPS → T15p → internet (double-hop, exit IP apartment)
 - [x] DNS via T15p (ping google.com works on MacBook over VPN)
 - [x] SSH from MacBook to T15p over VPN (`ssh as@10.100.0.2`)
 

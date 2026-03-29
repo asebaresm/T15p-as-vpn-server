@@ -10,8 +10,8 @@ Always-on router and VPN server running in an apartment, accessible from anywher
 |-----------|------|
 | **Lenovo ThinkPad T15p Gen2** | Router + VPN server. Connects to building shared WiFi as WAN, routes traffic to IoT devices, maintains VPN tunnel to the relay |
 | **TP-Link Archer MR550** | IoT WiFi access point. Connected to the T15p via ethernet; provides 2.4GHz + 5GHz WiFi to IoT devices |
-| **Oracle VPS** (Marseille, Always Free) | WireGuard relay. Bridges the T15p and MacBook — both connect outbound to it, solving NAT traversal |
-| **MacBook** | Remote client. Connects to the VPN from anywhere; all internet traffic exits via the VPS in Marseille |
+| **Oracle VPS** (Marseille, Always Free) | WireGuard relay. Bridges the T15p and MacBook — both connect outbound to it, solving NAT traversal. Does not terminate traffic — forwards MacBook internet to T15p |
+| **MacBook** | Remote client. Connects to the VPN from anywhere; all internet traffic double-hops through VPS → T15p and exits via the apartment |
 
 The ethernet cable between the T15p and the MR550 is required because the T15p's WiFi card is single-radio — it cannot simultaneously connect to the building WiFi and host a hotspot.
 
@@ -22,19 +22,22 @@ The ethernet cable between the T15p and the MR550 is required because the T15p's
 ```
 Internet
    │
-Building shared WiFi  (WAN)
+Building shared WiFi  (WAN, apartment public IP)
    │
 T15p (wlp0s20f3)
-   │  192.168.10.0/24
-T15p (enp0s31f6) ──── ethernet ──── MR550 ──── IoT WiFi (2.4 / 5 GHz)
+   ├── 192.168.10.0/24
+   │   T15p (enp0s31f6) ──── ethernet ──── MR550 ──── IoT WiFi (2.4 / 5 GHz)
    │
-  wg0 (10.100.0.2)
-   │  WireGuard tunnel
-VPS (10.100.0.1) ── Marseille, public IP 130.110.246.244
-   │
-  wg0 (10.100.0.3)
-   │
-MacBook  (anywhere)
+   └── wg0 (10.100.0.2)
+       │  WireGuard tunnel
+       VPS (10.100.0.1) ── Marseille, relay only
+       │
+       wg0 (10.100.0.3)
+       │
+       MacBook  (anywhere)
+
+MacBook internet path (double-hop):
+  MacBook → VPS (relay) → T15p → building WiFi → internet (exit IP: apartment)
 ```
 
 ---

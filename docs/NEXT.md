@@ -26,18 +26,13 @@
 - Prerequisite: confirm your SSH key is working (`ssh as@10.100.0.2`) before disabling
   passwords to avoid locking yourself out
 
-## VPS Location — Move Exit IP to Andorra
+## VPS Location — Move Exit IP to Apartment ✅
 
-- Currently the MacBook's internet exits via the VPS in Marseille (Oracle `eu-marseille-1`)
-- Oracle Cloud has no Andorra region; closest options: Madrid (`eu-madrid-1`), Milan, or
-  Frankfurt — none are Andorra
-- Alternatives:
-  - **Route internet through T15p instead of VPS**: change VPS to only relay WireGuard
-    traffic; T15p does the masquerade — exit IP would be the Andorra building WiFi IP.
-    Requires adding a second WireGuard peer route and adjusting NAT on both VPS and T15p
-  - **Different VPS provider**: Hetzner (Falkenstein/Nuremberg), Vultr, or a local Andorran
-    ISP VPS if available — but no major cloud has an Andorra PoP
-  - **Accept Marseille**: latency is low (~13ms), and Marseille is the closest Oracle region
+- Implemented double-hop: MacBook → VPS → T15p → building WiFi → internet
+- VPS uses policy routing (`ip rule from 10.100.0.3 table 100`) to forward MacBook traffic
+  to T15p instead of masquerading out ens3
+- T15p nftables allows wg0 → wlp0s20f3 forwarding and masquerades on wlp0s20f3
+- Exit IP is now the apartment's building WiFi public IP
 
 ## Auto-start Server Mode on Boot
 
