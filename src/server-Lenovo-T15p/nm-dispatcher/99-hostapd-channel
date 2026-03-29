@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# NetworkManager dispatcher script
+# Installed at: /etc/NetworkManager/dispatcher.d/99-hostapd-channel
+#
+# When wlp0s20f3 (STA) connects to the building WiFi, reads the active channel
+# and rewrites hostapd.conf to use the same channel, then starts/restarts hostapd.
+#
+# This is required because the Intel AX201 CNVi supports STA+AP on one channel
+# only — the AP must follow whichever channel the STA is locked to.
+
+IFACE=$1
+ACTION=$2
+HOSTAPD_CONF=/etc/hostapd/hostapd.conf
+
+[ "$IFACE" != "wlp0s20f3" ] && exit 0
+
+case "$ACTION" in
+  up|connectivity-change)
+    # Get the channel wlp0s20f3 is currently on
+    CHANNEL=$(iw dev wlp0s20f3 info 2>/dev/null | awk '/channel/ {print $2}' | head -1)
+
+    if [ -z "$CHANNEL" ]; then
+      logger -t hostapd-channel "Could not determine channel for wlp0s20f3, skipping hostapd start"
+      exit 0
+    fi
+
+    logger -t hostapd-channel "wlp0s20f3 up on channel $CHANNEL — updating hostapd.conf"
+
+    # Update the channel line in hostapd.conf
+    sed -i "s/^channel=.*/channel=$CHANNEL/" "$HOSTAPD_CONF"
+
+    # Start or restart hostapd
+    systemctl restart hostapd
+    ;;
+
+  down)
+    logger -t hostapd-channel "wlp0s20f3 down — stopping hostapd"
+    systemctl stop hostapd
+    ;;
+esac
