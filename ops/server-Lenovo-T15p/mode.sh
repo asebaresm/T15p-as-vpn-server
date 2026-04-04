@@ -39,8 +39,16 @@ if [[ "$MODE" == "server" ]]; then
   echo "  [4/4] Starting WireGuard tunnel..."
   systemctl restart wg-quick@wg0
 
-  # dnsmasq needs wg0 up first (bind-interfaces: binds to wg0 IP 10.100.0.2)
+  # Wait for wg0 to get its IP (dnsmasq needs it for bind-interfaces)
+  for i in $(seq 1 10); do
+    if ip -4 addr show wg0 2>/dev/null | grep -q "10.100.0.2"; then
+      break
+    fi
+    sleep 1
+  done
+
   systemctl restart dnsmasq
+  systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true
 
   echo ""
   echo "  SERVER mode active."

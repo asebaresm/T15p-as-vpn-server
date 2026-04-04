@@ -1,0 +1,7 @@
+[Unit]
+Description=T15p VPN Server Watchdog
+After=t15p-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/t15p-vpn/watchdog.sh

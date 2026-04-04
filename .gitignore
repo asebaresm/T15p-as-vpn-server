@@ -1,1 +1,2 @@
 .env.local
+src/client-macos/wg0-*.conf

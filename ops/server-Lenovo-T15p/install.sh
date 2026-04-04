@@ -21,10 +21,25 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 set -a; source "$ENV_FILE"; set +a
 
-if [[ -z "${VPS_SERVER_PUBLIC_IP:-}" ]]; then
-  echo "ERROR: VPS_SERVER_PUBLIC_IP is not set in .env.local"
-  exit 1
-fi
+for VAR in VPS_SERVER_PUBLIC_IP VPS_PRIVATE_KEY VPS_PUBLIC_KEY T15P_PRIVATE_KEY T15P_PUBLIC_KEY MACBOOK_PUBLIC_KEY; do
+  if [[ -z "${!VAR:-}" ]]; then
+    echo "ERROR: $VAR is not set in .env.local"
+    exit 1
+  fi
+done
+
+# Substitutes all {{VAR}} placeholders in a template file
+render_template() {
+  local src="$1"
+  sed -e "s|{{VPS_SERVER_PUBLIC_IP}}|$VPS_SERVER_PUBLIC_IP|g" \
+      -e "s|{{VPS_PRIVATE_KEY}}|$VPS_PRIVATE_KEY|g" \
+      -e "s|{{VPS_PUBLIC_KEY}}|$VPS_PUBLIC_KEY|g" \
+      -e "s|{{T15P_PRIVATE_KEY}}|$T15P_PRIVATE_KEY|g" \
+      -e "s|{{T15P_PUBLIC_KEY}}|$T15P_PUBLIC_KEY|g" \
+      -e "s|{{MACBOOK_PRIVATE_KEY}}|$MACBOOK_PRIVATE_KEY|g" \
+      -e "s|{{MACBOOK_PUBLIC_KEY}}|$MACBOOK_PUBLIC_KEY|g" \
+      "$src"
+}
 
 # Saves the original file before we overwrite it.
 # Marks absent files with a sentinel so rollback knows to delete them.
@@ -117,7 +132,7 @@ apt-get update -qq
 apt-get install -y dnsmasq wireguard nftables iw openssh-server
 
 echo "==> Setting up WireGuard..."
-sed "s|{{VPS_SERVER_PUBLIC_IP}}|$VPS_SERVER_PUBLIC_IP|g" "$SRC/wg0.conf" > /etc/wireguard/wg0.conf
+render_template "$SRC/wg0.conf" > /etc/wireguard/wg0.conf
 chmod 600 /etc/wireguard/wg0.conf
 
 echo "==> Setting up dnsmasq..."

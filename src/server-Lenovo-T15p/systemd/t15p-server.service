@@ -1,0 +1,21 @@
+[Unit]
+Description=T15p VPN Server Mode
+After=NetworkManager-wait-online.service
+Wants=NetworkManager-wait-online.service
+
+# Retry if WiFi isn't ready yet
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/t15p-vpn/mode.sh server
+ExecStop=/opt/t15p-vpn/mode.sh laptop
+
+# Retry on failure (WiFi not yet connected)
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

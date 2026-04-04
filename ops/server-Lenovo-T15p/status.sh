@@ -98,6 +98,27 @@ else
   fail "IP forwarding disabled"
 fi
 
+# ── VPS ───────────────────────────────────────────────────────────────────────
+header "VPS relay"
+
+if ip link show wg0 &>/dev/null; then
+  if ping -c 1 -W 3 10.100.0.1 &>/dev/null; then
+    ok "VPS reachable at 10.100.0.1"
+  else
+    fail "VPS unreachable at 10.100.0.1"
+  fi
+
+  # Check VPS WireGuard is accepting traffic (has recent handshake from our side)
+  VPS_TRANSFER=$(sudo wg show wg0 2>/dev/null | awk '/transfer/ {print $2, $3}')
+  if [[ -n "$VPS_TRANSFER" && "$VPS_TRANSFER" != "0 B" ]]; then
+    ok "traffic flowing ($VPS_TRANSFER received from VPS)"
+  else
+    warn "no traffic received from VPS yet"
+  fi
+else
+  fail "wg0 not up — cannot check VPS"
+fi
+
 # ── SSH ───────────────────────────────────────────────────────────────────────
 header "SSH"
 
@@ -112,12 +133,13 @@ fi
 # ── SUMMARY ───────────────────────────────────────────────────────────────────
 echo
 echo "────────────────────────────────────────"
-if ! (systemctl is-active --quiet dnsmasq && \
-      systemctl is-active --quiet wg-quick@wg0 && \
-      [[ -n "$WAN_IP" ]] && [[ -n "$WG_IP" ]]); then
+if (systemctl is-active --quiet dnsmasq && \
+    [[ -n "$WAN_IP" ]] && [[ -n "$WG_IP" ]] && \
+    [[ "$LAN_IP" == "192.168.10.1/24" ]] && \
+    (systemctl is-active --quiet ssh || systemctl is-active --quiet sshd)); then
+  echo "  STATUS: all systems nominal"
+else
   echo "  STATUS: degraded — check failures above"
   echo "  To restart server mode: sudo bash ops/server-Lenovo-T15p/mode.sh server"
-else
-  echo "  STATUS: all systems nominal"
 fi
 echo

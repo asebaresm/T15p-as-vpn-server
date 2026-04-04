@@ -34,18 +34,18 @@
 - T15p nftables allows wg0 → wlp0s20f3 forwarding and masquerades on wlp0s20f3
 - Exit IP is now the apartment's building WiFi public IP
 
-## Auto-start Server Mode on Boot
+## Auto-start Server Mode on Boot ✅
 
-- Currently `mode.sh server` must be run manually after each reboot
-- To automate: create a systemd service that runs `mode.sh server` after NetworkManager
-  brings up `wlp0s20f3` (building WiFi) — needs an `After=` + `Wants=` dependency on the
-  NM connection unit so the WAN is up before the server stack starts
-- Risk: if WiFi fails at boot, the service will start without a working WAN — add a
-  connectivity check or make the service restart on failure
+- `t15p-server.service` starts `mode.sh server` after NetworkManager connects
+- Watchdog timer (`t15p-watchdog.timer`) checks health every 2 min, restarts failed services
+- VPS checks included: ping reachability, stale handshake detection
 
-## Disable any Ubuntu bullshit that may crash the services on the Lenovo
+## T15p Hardening ✅
 
-- What the title says
+- Applied via `harden.sh`: no auto-reboot from apt, snap refresh limited to Sunday 4 AM,
+  lid close / idle / power button don't suspend, sleep targets masked
+- `Table = off` on VPS wg0.conf prevents wg-quick from hijacking the VPS default route
+  when `AllowedIPs = 0.0.0.0/0` is set for the T15p peer
 
 ## Setup lenovo-to-lenovo VPN tunnel, so that no IP leaks when connecting to the VPN from the Macbook
 
