@@ -1,2 +1,3 @@
 .env.local
 src/client-macos/wg0-*.conf
+src/client-android/wg0-*.conf
