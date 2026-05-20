@@ -1,0 +1,601 @@
+#!/usr/bin/env bash
+#
+# t15 — unified control plane for the T15 apartment VPN router.
+#
+# Subcommands:
+#   bootstrap [project-root]  First-time install. Records project root in
+#                             /etc/t15/config, installs configs + systemd units
+#                             + hardening, then deploys. Defaults to PWD.
+#   deploy                    Re-render configs from src/ to /etc/, restart all
+#                             services. Run after editing anything in src/.
+#   start                     Start the VPN/router (systemctl start t15.target)
+#   stop                      Stop everything
+#   restart                   stop + start
+#   status                    Health check (read-only, no sudo needed for most)
+#   logs [unit]               Tail journalctl. Defaults to all t15 units.
+#   uninstall                 Restore original /etc/ files, remove all units
+#
+# After bootstrap, this script lives at /usr/local/bin/t15 — run from anywhere.
+
+set -euo pipefail
+
+# ── Constants ────────────────────────────────────────────────────────────────
+TOOL_NAME=t15
+INSTALL_PATH=/usr/local/bin/t15
+CONFIG_DIR=/etc/t15
+CONFIG_FILE=$CONFIG_DIR/config
+BACKUP_DIR=/var/backups/t15-router
+LAN_IFACE=enp0s31f6
+WAN_IFACE=wlp0s20f3
+LAN_CIDR=192.168.10.1/24
+WG_IFACE=wg0
+WG_PEER_IP=10.100.0.1
+WG_SELF_IP=10.100.0.2
+
+# Files this tool deploys. Format: src-relative:dest-absolute:mode:kind
+#   src-relative — path under $PROJECT_ROOT/src/server-Lenovo-T15/
+#   kind         — "template" (run through sed) or "copy" (plain cp)
+MANAGED_FILES=(
+  "wg0.conf:/etc/wireguard/wg0.conf:600:template"
+  "dnsmasq-iot.conf:/etc/dnsmasq.d/iot.conf:644:copy"
+  "nftables.conf:/etc/nftables.conf:644:copy"
+  "sysctl-router.conf:/etc/sysctl.d/99-router.conf:644:copy"
+  "nm-unmanaged.conf:/etc/NetworkManager/conf.d/unmanaged.conf:644:copy"
+  "nm-connectivity.conf:/etc/NetworkManager/conf.d/connectivity.conf:644:copy"
+  "sshd-hardening.conf:/etc/ssh/sshd_config.d/10-t15.conf:644:copy"
+  "modules-load-wireguard.conf:/etc/modules-load.d/wireguard.conf:644:copy"
+  "systemd/t15.target:/etc/systemd/system/t15.target:644:copy"
+  "systemd/t15-lan.service:/etc/systemd/system/t15-lan.service:644:copy"
+  "systemd/t15-watchdog.service:/etc/systemd/system/t15-watchdog.service:644:copy"
+  "systemd/t15-watchdog.timer:/etc/systemd/system/t15-watchdog.timer:644:copy"
+  "systemd/dnsmasq.service.d/10-t15.conf:/etc/systemd/system/dnsmasq.service.d/10-t15.conf:644:copy"
+  "systemd/wg-quick@.service.d/10-t15.conf:/etc/systemd/system/wg-quick@.service.d/10-t15.conf:644:copy"
+  "systemd/nftables.service.d/10-t15.conf:/etc/systemd/system/nftables.service.d/10-t15.conf:644:copy"
+)
+
+PACKAGES=(dnsmasq wireguard nftables iw openssh-server)
+
+# Files generated inline (no source in the repo) — tracked so uninstall can restore.
+INLINE_FILES=(
+  /etc/apt/apt.conf.d/99-no-auto-reboot
+  /etc/systemd/logind.conf.d/no-suspend.conf
+)
+
+# ── Output helpers ───────────────────────────────────────────────────────────
+log()  { printf '==> %s\n' "$*"; }
+info() { printf '    %s\n'  "$*"; }
+warn() { printf '!   %s\n' "$*" >&2; }
+err()  { printf 'ERROR: %s\n' "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# ── Privilege + config helpers ───────────────────────────────────────────────
+require_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "not bootstrapped yet — run: sudo $TOOL_NAME bootstrap <project-root>"
+  set -a; source "$CONFIG_FILE"; set +a
+  [[ -d "${PROJECT_ROOT:-}" ]] || die "PROJECT_ROOT in $CONFIG_FILE does not exist: ${PROJECT_ROOT:-<unset>}"
+}
+
+load_env() {
+  local env_file="$PROJECT_ROOT/.env.local"
+  [[ -f "$env_file" ]] || die ".env.local not found at $env_file"
+  set -a; source "$env_file"; set +a
+  local var
+  for var in VPS_SERVER_PUBLIC_IP VPS_PUBLIC_KEY T15_PRIVATE_KEY; do
+    [[ -n "${!var:-}" ]] || die "$var is not set in $env_file"
+  done
+}
+
+render_template() {
+  local src="$1"
+  sed -e "s|{{VPS_SERVER_PUBLIC_IP}}|${VPS_SERVER_PUBLIC_IP:-}|g" \
+      -e "s|{{VPS_PRIVATE_KEY}}|${VPS_PRIVATE_KEY:-}|g" \
+      -e "s|{{VPS_PUBLIC_KEY}}|${VPS_PUBLIC_KEY:-}|g" \
+      -e "s|{{T15_PRIVATE_KEY}}|${T15_PRIVATE_KEY:-}|g" \
+      -e "s|{{T15_PUBLIC_KEY}}|${T15_PUBLIC_KEY:-}|g" \
+      -e "s|{{MACBOOK_PRIVATE_KEY}}|${MACBOOK_PRIVATE_KEY:-}|g" \
+      -e "s|{{MACBOOK_PUBLIC_KEY}}|${MACBOOK_PUBLIC_KEY:-}|g" \
+      "$src"
+}
+
+# Save original /etc/ file before first overwrite (idempotent).
+# Marks absent files with a sentinel so uninstall knows to delete the rendered file.
+backup_file() {
+  local dest="$1"
+  local bdir="$BACKUP_DIR/$(dirname "$dest")"
+  local base; base="$(basename "$dest")"
+  mkdir -p "$bdir"
+  [[ -e "$bdir/${base}.orig" || -e "$bdir/${base}.absent" ]] && return
+  if [[ -e "$dest" ]]; then
+    cp -a "$dest" "$bdir/${base}.orig"
+  else
+    touch "$bdir/${base}.absent"
+  fi
+}
+
+restore_file() {
+  local dest="$1"
+  local bdir="$BACKUP_DIR/$(dirname "$dest")"
+  local base; base="$(basename "$dest")"
+  if [[ -e "$bdir/${base}.orig" ]]; then
+    cp -a "$bdir/${base}.orig" "$dest"
+    info "restored $dest"
+  elif [[ -e "$bdir/${base}.absent" ]]; then
+    rm -f "$dest"
+    info "removed  $dest (not present pre-install)"
+  fi
+}
+
+install_self() {
+  local src="$1/ops/server-Lenovo-T15/t15"
+  [[ -f "$src" ]] || die "can't find $src"
+  install -m 0755 "$src" "$INSTALL_PATH"
+}
+
+# ── Subcommand: bootstrap ────────────────────────────────────────────────────
+cmd_bootstrap() {
+  local project_root="${1:-$PWD}"
+  project_root="$(realpath "$project_root")"
+  [[ -d "$project_root/src/server-Lenovo-T15" ]] \
+    || die "$project_root doesn't look like the T15 VPN project (no src/server-Lenovo-T15/)"
+  [[ -f "$project_root/.env.local" ]] \
+    || die "$project_root/.env.local missing — copy .env.local.example and fill it in"
+
+  log "Bootstrapping $TOOL_NAME from $project_root"
+  install_self "$project_root"
+  mkdir -p "$CONFIG_DIR"
+  cat > "$CONFIG_FILE" <<EOF
+# $TOOL_NAME configuration — managed by the $TOOL_NAME tool
+PROJECT_ROOT=$project_root
+EOF
+  chmod 644 "$CONFIG_FILE"
+  info "tool installed at $INSTALL_PATH"
+  info "config written  at $CONFIG_FILE"
+  echo
+  cmd_deploy
+}
+
+# ── Subcommand: deploy ───────────────────────────────────────────────────────
+cmd_deploy() {
+  require_config
+  load_env
+
+  log "Re-installing the $TOOL_NAME tool"
+  install_self "$PROJECT_ROOT"
+
+  log "Installing packages: ${PACKAGES[*]}"
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -qq -y "${PACKAGES[@]}" >/dev/null
+
+  log "Deploying managed configs"
+  deploy_managed_files
+
+  log "Applying hardening"
+  apply_hardening
+
+  log "Removing legacy units (if present)"
+  systemctl disable --now t15-server.service 2>/dev/null || true
+  rm -f /etc/systemd/system/t15-server.service
+  rm -rf /opt/t15-vpn
+
+  log "Reloading systemd + sysctl"
+  systemctl daemon-reload
+  sysctl --system >/dev/null
+  systemctl reload NetworkManager
+
+  log "Enabling units at boot"
+  systemctl enable NetworkManager-wait-online.service >/dev/null 2>&1 || true
+  systemctl enable nftables.service                       >/dev/null
+  systemctl enable ssh.service                            >/dev/null 2>&1 || systemctl enable sshd.service >/dev/null
+  systemctl enable wg-quick@wg0.service                   >/dev/null
+  systemctl enable dnsmasq.service                        >/dev/null
+  systemctl enable t15-lan.service                       >/dev/null
+  systemctl enable t15.target                            >/dev/null
+  systemctl enable t15-watchdog.timer                    >/dev/null
+
+  log "Verifying systemd dependency graph (no cycles, no fatal warnings)"
+  verify_units || die "refusing to restart services. Fix the units in src/ and re-run 'sudo $TOOL_NAME deploy'."
+
+  log "Restarting everything"
+  systemctl restart nftables.service
+  systemctl reload-or-restart ssh.service 2>/dev/null || systemctl restart sshd.service
+  systemctl stop  t15.target 2>/dev/null || true
+  systemctl start t15.target
+  systemctl restart t15-watchdog.timer
+
+  echo
+  log "Deploy complete. Run '$TOOL_NAME status' to verify."
+}
+
+# Run systemd-analyze verify on every unit we own (or rely on) — catches
+# dependency cycles + parse errors before they bite at the next boot.
+verify_units() {
+  local units=(
+    t15.target
+    t15-lan.service
+    t15-watchdog.service
+    t15-watchdog.timer
+    wg-quick@wg0.service
+    dnsmasq.service
+    nftables.service
+    ssh.service
+  )
+  local out rc=0
+  out=$(systemd-analyze verify "${units[@]}" 2>&1) || rc=$?
+  if (( rc != 0 )) || [[ -n "$out" ]]; then
+    err "systemd-analyze verify reported issues:"
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+  info "OK"
+}
+
+deploy_managed_files() {
+  local entry src_rel dest mode kind src
+  for entry in "${MANAGED_FILES[@]}"; do
+    IFS=: read -r src_rel dest mode kind <<<"$entry"
+    src="$PROJECT_ROOT/src/server-Lenovo-T15/$src_rel"
+    [[ -f "$src" ]] || die "source missing: $src"
+    backup_file "$dest"
+    mkdir -p "$(dirname "$dest")"
+    case "$kind" in
+      template) (umask 077; render_template "$src" > "$dest.tmp") ;;
+      copy)     cp "$src" "$dest.tmp" ;;
+      *)        die "unknown deploy kind: $kind" ;;
+    esac
+    chmod "$mode" "$dest.tmp"
+    mv "$dest.tmp" "$dest"
+    info "wrote $dest"
+  done
+}
+
+apply_hardening() {
+  backup_file /etc/apt/apt.conf.d/99-no-auto-reboot
+  cat > /etc/apt/apt.conf.d/99-no-auto-reboot <<'EOF'
+// Managed by t15 — do not edit by hand.
+// Prevent unattended-upgrades from rebooting and from churning kernels.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
+EOF
+  info "wrote /etc/apt/apt.conf.d/99-no-auto-reboot"
+
+  backup_file /etc/systemd/logind.conf.d/no-suspend.conf
+  mkdir -p /etc/systemd/logind.conf.d
+  cat > /etc/systemd/logind.conf.d/no-suspend.conf <<'EOF'
+# Managed by t15 — do not edit by hand.
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+HandlePowerKey=ignore
+IdleAction=ignore
+EOF
+  info "wrote /etc/systemd/logind.conf.d/no-suspend.conf"
+
+  systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1 || true
+  snap set system refresh.timer="sun,04:00" 2>/dev/null || true
+}
+
+# ── Subcommand: start / stop / restart ──────────────────────────────────────
+cmd_start() {
+  require_config
+  systemctl start t15.target
+  cmd_status
+}
+cmd_stop() {
+  require_config
+  systemctl stop t15.target
+  log "Stopped. SSH and nftables remain up (they're not in t15.target)."
+}
+cmd_restart() {
+  require_config
+  systemctl stop t15.target || true
+  systemctl start t15.target
+  cmd_status
+}
+
+# ── Subcommand: status ──────────────────────────────────────────────────────
+cmd_status() {
+  local PASS="✓" FAIL="✗" WARN="~"
+  _ok()   { printf '  %s %s\n' "$PASS" "$1"; }
+  _fail() { printf '  %s %s\n' "$FAIL" "$1"; }
+  _warn() { printf '  %s %s\n' "$WARN" "$1"; }
+  _hdr()  { printf '\n── %s ──────────────────────────────\n' "$1"; }
+
+  local degraded=0
+  _mark_fail() { _fail "$1"; degraded=1; }
+
+  # When running as root, call binaries directly (sudo-from-root has surprising
+  # behavior under some sudoers configs and broke this check in practice).
+  # Otherwise try `sudo -n` to use any cached credentials.
+  local -a SUDO_N=()
+  [[ $EUID -ne 0 ]] && SUDO_N=(sudo -n)
+
+  _hdr "Target"
+  if systemctl is-active --quiet t15.target; then _ok "t15.target active"
+  else                                              _mark_fail "t15.target NOT active"
+  fi
+
+  _hdr "WAN ($WAN_IFACE — building WiFi)"
+  local wan_ip
+  wan_ip=$( { ip -4 addr show "$WAN_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1; } || true)
+  if [[ -n "$wan_ip" ]]; then _ok "$WAN_IFACE up — $wan_ip"
+  else                        _mark_fail "$WAN_IFACE has no IP"
+  fi
+  if ping -c1 -W2 -I "$WAN_IFACE" 1.1.1.1 &>/dev/null; then _ok "internet reachable via $WAN_IFACE"
+  else                                                       _mark_fail "no internet via $WAN_IFACE"
+  fi
+
+  _hdr "LAN ($LAN_IFACE → MR550)"
+  local lan_ip
+  lan_ip=$( { ip -4 addr show "$LAN_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1; } || true)
+  if [[ "$lan_ip" == "$LAN_CIDR" ]]; then _ok "$LAN_IFACE up — $lan_ip"
+  else                                     _mark_fail "$LAN_IFACE not configured (got '${lan_ip:-none}', expected $LAN_CIDR)"
+  fi
+  if systemctl is-active --quiet dnsmasq; then
+    _ok "dnsmasq running"
+    if [[ -r /var/lib/misc/dnsmasq.leases ]]; then
+      local leases
+      leases=$(wc -l < /var/lib/misc/dnsmasq.leases 2>/dev/null || echo 0)
+      if [[ "$leases" -gt 0 ]]; then
+        _ok "$leases DHCP lease(s) active"
+        awk '{printf "      %s  %-16s  %s\n", $3, $4, $2}' /var/lib/misc/dnsmasq.leases
+      else
+        _warn "no DHCP leases yet"
+      fi
+    fi
+  else
+    _mark_fail "dnsmasq not running"
+  fi
+
+  _hdr "WireGuard ($WG_IFACE)"
+  if systemctl is-active --quiet wg-quick@wg0; then _ok "wg-quick@wg0 service active"
+  else                                                _mark_fail "wg-quick@wg0 service NOT active (sudo systemctl start wg-quick@wg0)"
+  fi
+  local wg_ip
+  wg_ip=$( { ip -4 addr show "$WG_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1; } || true)
+  if [[ -n "$wg_ip" ]]; then _ok "$WG_IFACE up — $wg_ip"
+  else                        _mark_fail "$WG_IFACE not up"
+  fi
+  if command -v wg &>/dev/null; then
+    local wg_out endpoint handshake transfer
+    wg_out=$("${SUDO_N[@]}" wg show "$WG_IFACE" 2>/dev/null || true)
+    if [[ -z "$wg_out" ]]; then
+      _warn "wg show needs sudo — re-run as: sudo $TOOL_NAME status"
+    else
+      endpoint=$(echo "$wg_out"  | awk '/endpoint/ {print $2}')
+      handshake=$(echo "$wg_out" | awk '/latest handshake/ {$1=$2=""; sub(/^ +/,""); print}')
+      transfer=$(echo "$wg_out"  | awk '/transfer/ {print $2, $3, "rx /", $5, $6, "tx"}')
+      [[ -n "$endpoint"  ]] && _ok "endpoint: $endpoint"
+      if [[ -n "$handshake" ]]; then _ok "last handshake: $handshake"
+      else                            _mark_fail "no handshake with VPS"
+      fi
+      [[ -n "$transfer"  ]] && _ok "transfer: $transfer"
+    fi
+  fi
+  if ping -c1 -W2 "$WG_PEER_IP" &>/dev/null; then _ok "VPS reachable at $WG_PEER_IP"
+  else                                              _mark_fail "VPS unreachable at $WG_PEER_IP"
+  fi
+
+  _hdr "Firewall + forwarding"
+  local nft_out
+  nft_out=$("${SUDO_N[@]}" nft list ruleset 2>/dev/null || true)
+  if [[ -n "$nft_out" ]]; then
+    if grep -q "hook input" <<<"$nft_out"; then
+      _ok "nftables ruleset loaded"
+    else
+      _mark_fail "nftables ruleset empty"
+    fi
+  elif systemctl is-active --quiet nftables; then
+    _warn "nftables.service active but ruleset unreadable (run as root: sudo $TOOL_NAME status)"
+  else
+    _mark_fail "nftables.service not active"
+  fi
+  if [[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" == "1" ]]; then _ok "IP forwarding enabled"
+  else                                                                       _mark_fail "IP forwarding disabled"
+  fi
+
+  _hdr "SSH"
+  if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
+    _ok "sshd running"
+    if grep -qrE '^[[:space:]]*PasswordAuthentication[[:space:]]+no' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ 2>/dev/null; then
+      _ok "password auth disabled"
+    else
+      _warn "password auth still enabled — deploy should have disabled it"
+    fi
+  else
+    _mark_fail "sshd not running"
+  fi
+
+  _hdr "Watchdog"
+  if systemctl is-active --quiet t15-watchdog.timer; then
+    _ok "t15-watchdog.timer active"
+    local next
+    next=$(systemctl list-timers t15-watchdog.timer --no-legend --no-pager 2>/dev/null | awk '{print $1, $2}')
+    [[ -n "$next" ]] && info "next fire: $next"
+  else
+    _mark_fail "t15-watchdog.timer not active"
+  fi
+
+  echo
+  echo "────────────────────────────────────────"
+  if (( degraded == 0 )); then
+    echo "  STATUS: all systems nominal"
+  else
+    echo "  STATUS: degraded — see ✗ above"
+    echo "  Try:   sudo $TOOL_NAME restart"
+    echo "  Logs:  $TOOL_NAME logs"
+  fi
+  echo
+}
+
+# ── Subcommand: logs ────────────────────────────────────────────────────────
+cmd_logs() {
+  if [[ $# -gt 0 ]]; then
+    journalctl -fu "$@"
+  else
+    journalctl -fu t15-lan.service \
+                 -u t15-watchdog.service \
+                 -u wg-quick@wg0.service \
+                 -u dnsmasq.service \
+                 -u nftables.service
+  fi
+}
+
+# ── Subcommand: uninstall ───────────────────────────────────────────────────
+cmd_uninstall() {
+  log "Stopping units"
+  systemctl stop t15-watchdog.timer    2>/dev/null || true
+  systemctl stop t15.target            2>/dev/null || true
+  systemctl stop t15-lan.service       2>/dev/null || true
+  systemctl stop dnsmasq.service        2>/dev/null || true
+  systemctl stop wg-quick@wg0.service   2>/dev/null || true
+
+  log "Disabling units"
+  systemctl disable t15-watchdog.timer t15.target t15-lan.service \
+                    dnsmasq.service wg-quick@wg0.service nftables.service \
+                    2>/dev/null || true
+
+  log "Flushing firewall + LAN IP"
+  nft flush ruleset 2>/dev/null || true
+  ip addr flush dev "$LAN_IFACE" 2>/dev/null || true
+
+  log "Removing systemd unit files"
+  rm -f /etc/systemd/system/t15.target
+  rm -f /etc/systemd/system/t15-lan.service
+  rm -f /etc/systemd/system/t15-watchdog.service
+  rm -f /etc/systemd/system/t15-watchdog.timer
+  rm -rf /etc/systemd/system/dnsmasq.service.d/10-t15.conf
+  rm -rf /etc/systemd/system/wg-quick@.service.d/10-t15.conf
+  rm -rf /etc/systemd/system/nftables.service.d/10-t15.conf
+  rmdir --ignore-fail-on-non-empty /etc/systemd/system/dnsmasq.service.d 2>/dev/null || true
+  rmdir --ignore-fail-on-non-empty /etc/systemd/system/wg-quick@.service.d 2>/dev/null || true
+  rmdir --ignore-fail-on-non-empty /etc/systemd/system/nftables.service.d 2>/dev/null || true
+
+  log "Restoring original /etc/ files"
+  local entry _src dest _rest
+  for entry in "${MANAGED_FILES[@]}"; do
+    IFS=: read -r _src dest _rest <<<"$entry"
+    # Skip systemd unit files — already deleted above
+    [[ "$dest" == /etc/systemd/system/* ]] && continue
+    restore_file "$dest"
+  done
+  local f
+  for f in "${INLINE_FILES[@]}"; do
+    restore_file "$f"
+  done
+
+  log "Unmasking sleep targets"
+  systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null || true
+
+  log "Restoring snapd refresh window"
+  snap set system refresh.timer="" 2>/dev/null || true
+
+  log "Reloading systemd + sysctl + NM"
+  systemctl daemon-reload
+  sysctl --system >/dev/null
+  systemctl reload NetworkManager 2>/dev/null || true
+  nmcli device set "$LAN_IFACE" managed yes 2>/dev/null || true
+
+  log "Removing $TOOL_NAME tool + config"
+  rm -f "$INSTALL_PATH"
+  rm -rf "$CONFIG_DIR"
+
+  echo
+  log "Uninstall complete. Reboot recommended."
+  info "Backups remain at $BACKUP_DIR — delete manually if you don't need them."
+}
+
+# ── Internal subcommand: _watchdog (invoked by the systemd timer) ───────────
+cmd__watchdog() {
+  systemctl is-active --quiet t15.target || exit 0
+
+  local fixed=0
+  # wg-quick@wg0 dead — start it (handles the boot-time ordering-cycle case
+  # where systemd dropped the start job and the service was never attempted).
+  if ! systemctl is-active --quiet wg-quick@wg0; then
+    logger -t t15-watchdog "wg-quick@wg0 not active — starting"
+    modprobe wireguard 2>/dev/null || true
+    systemctl start wg-quick@wg0
+    fixed=$((fixed+1))
+  fi
+  # dnsmasq dead — start it (e.g. it gave up because wg-quick@wg0 wasn't ready)
+  if ! systemctl is-active --quiet dnsmasq; then
+    logger -t t15-watchdog "dnsmasq not active — starting"
+    systemctl start dnsmasq
+    fixed=$((fixed+1))
+  fi
+  # WireGuard handshake staleness — >5 min = restart tunnel
+  if command -v wg &>/dev/null && systemctl is-active --quiet wg-quick@wg0; then
+    local last now
+    last=$(wg show "$WG_IFACE" latest-handshakes 2>/dev/null | awk '{print $2; exit}')
+    now=$(date +%s)
+    if [[ -n "$last" && "$last" != "0" ]] && (( now - last > 300 )); then
+      logger -t t15-watchdog "WireGuard handshake stale ($((now-last))s) — restarting wg-quick@wg0"
+      systemctl restart wg-quick@wg0
+      fixed=$((fixed+1))
+    fi
+  fi
+  # LAN IP drift
+  if ! ip -4 addr show "$LAN_IFACE" 2>/dev/null | grep -q "$LAN_CIDR"; then
+    logger -t t15-watchdog "$LAN_IFACE missing $LAN_CIDR — restarting t15-lan"
+    systemctl restart t15-lan.service
+    fixed=$((fixed+1))
+  fi
+  # IP forwarding
+  if [[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" != "1" ]]; then
+    logger -t t15-watchdog "ip_forward off — re-enabling"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    fixed=$((fixed+1))
+  fi
+  (( fixed > 0 )) && logger -t t15-watchdog "patched $fixed issue(s)"
+  exit 0
+}
+
+# ── Help ─────────────────────────────────────────────────────────────────────
+cmd_help() {
+  cat <<EOF
+$TOOL_NAME — control plane for the T15 apartment VPN router
+
+Usage:
+  sudo $TOOL_NAME bootstrap [project-root]   First-time install (defaults to PWD)
+  sudo $TOOL_NAME deploy                     Re-apply configs + restart services
+  sudo $TOOL_NAME start                      Start the VPN/router
+  sudo $TOOL_NAME stop                       Stop everything in t15.target
+  sudo $TOOL_NAME restart                    stop + start
+       $TOOL_NAME status                     Health check (no sudo needed)
+       $TOOL_NAME logs [unit ...]            Tail logs (default: all t15 units)
+  sudo $TOOL_NAME uninstall                  Restore originals + remove tool
+
+Config:  $CONFIG_FILE
+Backups: $BACKUP_DIR
+EOF
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────────────────
+main() {
+  local cmd="${1:-help}"
+  case "$cmd" in
+    bootstrap|deploy|start|stop|restart|uninstall|_watchdog)
+      if [[ $EUID -ne 0 ]]; then exec sudo -E "$0" "$@"; fi
+      ;;
+  esac
+  shift || true
+  case "$cmd" in
+    bootstrap|deploy|start|stop|restart|status|logs|uninstall|help|_watchdog)
+      "cmd_$cmd" "$@"
+      ;;
+    -h|--help)
+      cmd_help
+      ;;
+    *)
+      err "unknown subcommand: $cmd"
+      cmd_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,19 @@
+# /etc/systemd/system/t15.target — managed by t15
+#
+# Groups the t15 VPN/router components so they can be started/stopped together.
+# `nftables`, `ssh`, and `t15-watchdog.timer` are intentionally NOT part of this
+# target — the firewall + SSH should remain up even when the VPN is stopped, and
+# the watchdog short-circuits itself when the target isn't active.
+#
+# NOTE: do NOT add After= for the member services. Combined with PartOf= on
+# each member's drop-in, it creates an ordering cycle at boot — systemd then
+# silently drops the wg-quick@wg0 start job to break it, and dnsmasq fails to
+# come up because its Requires=wg-quick@wg0 is unsatisfied. Wants= alone is
+# enough to pull the members in; they order themselves via their own After=.
+
+[Unit]
+Description=T15 VPN/Router (all components)
+Wants=t15-lan.service wg-quick@wg0.service dnsmasq.service
+
+[Install]
+WantedBy=multi-user.target

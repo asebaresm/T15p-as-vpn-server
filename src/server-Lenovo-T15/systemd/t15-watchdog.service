@@ -1,0 +1,14 @@
+# /etc/systemd/system/t15-watchdog.service — managed by t15
+#
+# Runs every 2 min via t15-watchdog.timer. Patches only the things systemd
+# itself can't see (WireGuard handshake staleness, IP forwarding drift,
+# LAN IP drift). Routine service crashes are handled by Restart=on-failure
+# drop-ins on the individual services.
+
+[Unit]
+Description=T15 watchdog (patches state systemd can't see)
+After=t15.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/t15 _watchdog

@@ -34,8 +34,8 @@ render_template() {
   sed -e "s|{{VPS_SERVER_PUBLIC_IP}}|$VPS_SERVER_PUBLIC_IP|g" \
       -e "s|{{VPS_PRIVATE_KEY}}|$VPS_PRIVATE_KEY|g" \
       -e "s|{{VPS_PUBLIC_KEY}}|$VPS_PUBLIC_KEY|g" \
-      -e "s|{{T15P_PRIVATE_KEY}}|$T15P_PRIVATE_KEY|g" \
-      -e "s|{{T15P_PUBLIC_KEY}}|$T15P_PUBLIC_KEY|g" \
+      -e "s|{{T15_PRIVATE_KEY}}|$T15_PRIVATE_KEY|g" \
+      -e "s|{{T15_PUBLIC_KEY}}|$T15_PUBLIC_KEY|g" \
       -e "s|{{MACBOOK_PRIVATE_KEY}}|$MACBOOK_PRIVATE_KEY|g" \
       -e "s|{{MACBOOK_PUBLIC_KEY}}|$MACBOOK_PUBLIC_KEY|g" \
       "$src"
@@ -273,8 +273,8 @@ configure_vps() {
   echo "  WireGuard : 10.100.0.1/24, UDP 51820"
   echo "  SSH       : ssh -i $SSH_KEY $SSH_USER@$VPS_SERVER_PUBLIC_IP"
   echo ""
-  echo "  Next: re-run install.sh on the T15p to update the endpoint"
-  echo "    sudo bash ops/server-Lenovo-T15p/install.sh"
+  echo "  Next: re-run install.sh on the T15 to update the endpoint"
+  echo "    sudo bash ops/server-Lenovo-T15/install.sh"
   echo "============================================"
 }
 

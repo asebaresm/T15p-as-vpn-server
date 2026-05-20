@@ -1,0 +1,12 @@
+# /etc/systemd/system/t15-watchdog.timer — managed by t15
+
+[Unit]
+Description=T15 watchdog timer (every 2 minutes)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=t15-watchdog.service
+
+[Install]
+WantedBy=timers.target

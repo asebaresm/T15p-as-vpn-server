@@ -1,4 +1,4 @@
-# T15p VPN Server
+# T15 VPN Server
 
 Always-on router and VPN server running in an apartment, accessible from anywhere.
 
@@ -8,12 +8,12 @@ Always-on router and VPN server running in an apartment, accessible from anywher
 
 | Component | Role |
 |-----------|------|
-| **Lenovo ThinkPad T15p Gen2** | Router + VPN server. Connects to building shared WiFi as WAN, routes traffic to IoT devices, maintains VPN tunnel to the relay |
-| **TP-Link Archer MR550** | IoT WiFi access point. Connected to the T15p via ethernet; provides 2.4GHz + 5GHz WiFi to IoT devices |
-| **Oracle VPS** (Marseille, Always Free) | WireGuard relay. Bridges the T15p and MacBook — both connect outbound to it, solving NAT traversal. Does not terminate traffic — forwards MacBook internet to T15p |
-| **MacBook** | Remote client. Connects to the VPN from anywhere; all internet traffic double-hops through VPS → T15p and exits via the apartment |
+| **Lenovo ThinkPad T15 Gen2** | Router + VPN server. Connects to building shared WiFi as WAN, routes traffic to IoT devices, maintains VPN tunnel to the relay |
+| **TP-Link Archer MR550** | IoT WiFi access point. Connected to the T15 via ethernet; provides 2.4GHz + 5GHz WiFi to IoT devices |
+| **Oracle VPS** (Marseille, Always Free) | WireGuard relay. Bridges the T15 and MacBook — both connect outbound to it, solving NAT traversal. Does not terminate traffic — forwards MacBook internet to T15 |
+| **MacBook** | Remote client. Connects to the VPN from anywhere; all internet traffic double-hops through VPS → T15 and exits via the apartment |
 
-The ethernet cable between the T15p and the MR550 is required because the T15p's WiFi card is single-radio — it cannot simultaneously connect to the building WiFi and host a hotspot.
+The ethernet cable between the T15 and the MR550 is required because the T15's WiFi card is single-radio — it cannot simultaneously connect to the building WiFi and host a hotspot.
 
 ---
 
@@ -24,7 +24,7 @@ The ethernet cable between the T15p and the MR550 is required because the T15p's
                            │
                   Building shared WiFi  (WAN, apartment public IP)
                            │
-                    T15p (wlp0s20f3)
+                    T15 (wlp0s20f3)
                            │
               ┌────────────┴────────────┐
               │                         │
@@ -44,12 +44,12 @@ The ethernet cable between the T15p and the MR550 is required because the T15p's
 MacBook internet path (double-hop):
 
   ┌─────────┐       ┌─────────┐       ┌─────────┐       ┌──────────┐
-  │ MacBook │──wg──▶│   VPS   │──wg──▶│  T15p   │──────▶│ Internet │
+  │ MacBook │──wg──▶│   VPS   │──wg──▶│  T15   │──────▶│ Internet │
   │10.100.0.3│      │10.100.0.1│      │10.100.0.2│      │          │
   └─────────┘       └─────────┘       └─────────┘       └──────────┘
                      relay only        NAT + exit
                     (forwards to       (apartment IP)
-                     T15p, does
+                     T15, does
                      not exit here)
 ```
 
@@ -59,59 +59,56 @@ MacBook internet path (double-hop):
 
 | Software | Where | Purpose |
 |----------|-------|---------|
-| **WireGuard** | T15p, VPS, MacBook | VPN tunnels |
-| **nftables** | T15p | Firewall and NAT (masquerade IoT traffic to WAN) |
-| **dnsmasq** | T15p | DHCP server for MR550 + DNS for VPN clients |
-| **NetworkManager** | T15p | Manages WAN (building WiFi connection) |
-| **OpenSSH server** | T15p | SSH access from MacBook over VPN |
-| **wg-quick** | T15p, VPS | WireGuard interface lifecycle management |
+| **WireGuard** | T15, VPS, MacBook | VPN tunnels |
+| **nftables** | T15 | Firewall and NAT (masquerade IoT traffic to WAN) |
+| **dnsmasq** | T15 | DHCP server for MR550 + DNS for VPN clients |
+| **NetworkManager** | T15 | Manages WAN (building WiFi connection) |
+| **OpenSSH server** | T15 | SSH access from MacBook over VPN |
+| **wg-quick** | T15, VPS | WireGuard interface lifecycle management |
 
 ---
 
 ## Operations
 
+After the first-time bootstrap (see "Setup from Scratch" below), everything is driven
+through the `t15` system binary — no need to be in the project directory:
+
 ```bash
-# Switch T15p to server mode (automatic after hardening, manual otherwise)
-sudo bash ops/server-Lenovo-T15p/mode.sh server
+sudo t15 deploy        # re-apply configs after editing anything in src/
+sudo t15 start         # start the VPN/router (t15.target)
+sudo t15 stop          # stop everything in t15.target (SSH + nftables stay up)
+sudo t15 restart       # stop + start
+     t15 status        # health check (no sudo needed)
+     t15 logs          # tail journalctl for all t15 units
+sudo t15 uninstall     # restore original /etc/ files, remove everything
 
-# Switch back to regular laptop
-sudo bash ops/server-Lenovo-T15p/mode.sh laptop
-
-# Check health of all components
-sudo bash ops/server-Lenovo-T15p/status.sh
-
-# Harden for always-on operation (auto-start, watchdog, no suspend, no auto-reboot)
-sudo bash ops/server-Lenovo-T15p/harden.sh
-
-# Undo hardening
-sudo bash ops/server-Lenovo-T15p/harden.sh undo
-
-# Undo install and restore original networking
-sudo bash ops/server-Lenovo-T15p/install.sh rollback
-
-# SSH into T15p from MacBook (VPN must be active)
-ssh as@10.100.0.2
+ssh as@10.100.0.2       # SSH into T15 from MacBook (VPN must be active)
 ```
+
+The router auto-starts on boot via `t15.target`. A watchdog (`t15-watchdog.timer`)
+runs every 2 min and patches the things systemd can't see by itself (WireGuard
+handshake staleness, LAN IP drift, `ip_forward` sysctl drift). Routine service
+crashes are handled by per-service `Restart=on-failure` drop-ins.
 
 ---
 
 ## Limitations
 
 **Bandwidth**: MacBook internet traffic traverses the VPS twice (in + out) before reaching
-the T15p, making the VPS the bottleneck. The building WiFi upload speed is the second
-bottleneck — all MacBook download traffic must be uploaded from the T15p to the VPS.
+the T15, making the VPS the bottleneck. The building WiFi upload speed is the second
+bottleneck — all MacBook download traffic must be uploaded from the T15 to the VPS.
 
 **Latency**: The double-hop adds ~25-30ms regardless of VPS provider. Every packet travels
-MacBook → VPS → T15p → internet and back the same way. This overhead is inherent to the
+MacBook → VPS → T15 → internet and back the same way. This overhead is inherent to the
 architecture and cannot be reduced without removing the relay hop.
 
-**T15p availability**: All MacBook internet depends on the T15p being online and connected
-to building WiFi. If the T15p loses power, crashes, or loses WiFi, the MacBook has no
+**T15 availability**: All MacBook internet depends on the T15 being online and connected
+to building WiFi. If the T15 loses power, crashes, or loses WiFi, the MacBook has no
 internet while the VPN is active. LTE failover (planned) would mitigate WiFi outages.
 
 **MR550 throughput**: The MR550 is a budget 4G router repurposed as a WiFi AP. Its weak CPU
 and radio limit IoT WiFi throughput to ~22/22 Mbps (measured via 5GHz), despite the gigabit
-ethernet link to the T15p. This is fine for IoT devices but not for high-bandwidth clients.
+ethernet link to the T15. This is fine for IoT devices but not for high-bandwidth clients.
 The MacBook should always connect directly to the building WiFi for speed, not through the
 MR550. A dedicated AP (e.g. TP-Link EAP225, ~€40) would improve IoT WiFi to 200+ Mbps.
 
@@ -137,36 +134,37 @@ All estimates assume simultaneous sustained load. Bursty usage (normal browsing)
 
 ```
 src/
-  server-Lenovo-T15p/   config files deployed to /etc/ on the T15p
+  server-Lenovo-T15/   configs + systemd units deployed to /etc/ on the T15
   server-VPS/           WireGuard config for the VPS
   client-macos/         WireGuard config for the MacBook
+  client-android/       WireGuard config for the Android phone
 ops/
-  server-Lenovo-T15p/   install.sh, mode.sh, status.sh, harden.sh, watchdog.sh
-  server-VPS/           provision-vps.sh (Oracle Cloud provisioning)
+  server-Lenovo-T15/   t15  — single control-plane script (installed as /usr/local/bin/t15)
+  server-VPS/           provision-vps.sh (Oracle + Hetzner provisioning)
 docs/
-  STATUS.md             current state of each component
-  NEXT.md               planned improvements
+  STATUS.md             single source of truth — architecture, current state,
+                        secrets/restore guide, known gotchas, next steps
 ```
 
 ---
 
 ## Setup from Scratch
 
-This guide assumes a fresh Ubuntu Lenovo T15p, a new Oracle VPS, a TP-Link MR550, and a
-MacBook client. You will need the repo cloned on the T15p.
+This guide assumes a fresh Ubuntu Lenovo T15, a new Oracle VPS, a TP-Link MR550, and a
+MacBook client. You will need the repo cloned on the T15.
 
 ### Prerequisites
 
-1. Clone this repo on the T15p
+1. Clone this repo on the T15
 2. Copy `.env.local.example` to `.env.local` and fill in all values (see below)
-3. Connect the T15p to the building WiFi (the WAN connection)
+3. Connect the T15 to the building WiFi (the WAN connection)
 
 ### Step 1 — Generate WireGuard keys
 
-On the T15p, generate three key pairs (VPS, T15p, MacBook):
+On the T15, generate three key pairs (VPS, T15, MacBook):
 
 ```bash
-for name in vps t15p macbook; do
+for name in vps t15 macbook; do
   wg genkey | tee /tmp/${name}.key | wg pubkey > /tmp/${name}.pub
   echo "$name private: $(cat /tmp/${name}.key)"
   echo "$name public:  $(cat /tmp/${name}.pub)"
@@ -228,14 +226,20 @@ ssh -i ops/server-VPS/oracle/vps-ssh-key ubuntu@<VPS_IP> \
    sudo systemctl enable nftables'
 ```
 
-### Step 4 — Install and configure the T15p
+### Step 4 — Bootstrap the T15
 
-On the T15p, run the install script (deploys all configs, installs packages):
+From the project root on the T15, run the single bootstrap command. It installs the
+`t15` binary into `/usr/local/bin/`, records the project path in `/etc/t15/config`,
+deploys all configs to `/etc/`, enables the systemd units, and applies the always-on
+hardening (no suspend, no auto-reboot, snap refresh window, password SSH off):
 
 ```bash
-sudo bash ops/server-Lenovo-T15p/install.sh
+sudo ./ops/server-Lenovo-T15/t15 bootstrap
 sudo reboot
 ```
+
+From now on, you can run `sudo t15 deploy` from anywhere when you change anything
+in `src/`.
 
 ### Step 5 — Configure the MR550
 
@@ -244,20 +248,19 @@ sudo reboot
 3. Set **Operation Mode** to **Wireless Router Mode**
 4. Go to **Advanced → Network → Internet**: set **Internet Connection Type** to **Dynamic IP**
 5. Configure WiFi SSIDs and passwords for 2.4GHz and 5GHz as desired
-6. Connect an ethernet cable from the MR550's **WAN port** (labeled LAN/WAN) to the T15p's
+6. Connect an ethernet cable from the MR550's **WAN port** (labeled LAN/WAN) to the T15's
    ethernet port (`enp0s31f6`)
 
-### Step 6 — Start server mode and test
+### Step 6 — Verify
 
 ```bash
-sudo bash ops/server-Lenovo-T15p/mode.sh server
-sudo bash ops/server-Lenovo-T15p/status.sh
+t15 status        # all sections should report ✓
 ```
 
-Verify all checks pass. Then test:
+Then test:
 
 - Connect a phone to the MR550 WiFi — it should have internet
-- From the T15p: `ping 10.100.0.1` — should reach the VPS through the tunnel
+- From the T15: `ping 10.100.0.1` — should reach the VPS through the tunnel
 
 ### Step 7 — Configure the MacBook
 
@@ -266,41 +269,24 @@ WireGuard app on macOS. Activate the tunnel and test:
 
 ```bash
 ping 8.8.8.8           # internet via double-hop
-ping google.com        # DNS via T15p
-ssh as@10.100.0.2      # SSH into T15p
+ping google.com        # DNS via T15
+ssh as@10.100.0.2      # SSH into T15
 curl ifconfig.me       # should show the apartment's public IP
 ```
 
-Set up SSH key-based auth:
+Set up SSH key-based auth **before** the next reboot, because the bootstrap already
+disabled password SSH:
 
 ```bash
-ssh-copy-id as@10.100.0.2
+ssh-copy-id as@10.100.0.2     # do this from the T15 locally if you haven't already
 ```
 
-### Step 8 — Harden for always-on operation
-
-On the T15p:
-
-```bash
-sudo bash ops/server-Lenovo-T15p/harden.sh
-```
-
-This enables:
-- Auto-start server mode on boot (no manual `mode.sh` needed)
-- Watchdog timer that checks health every 2 min and restarts failed services
-- No auto-reboot from apt security updates
-- No suspend on lid close, idle, or power button
-- Snap refresh limited to Sunday 4 AM
-
-**Reboot to verify** — after reboot, run `sudo bash ops/server-Lenovo-T15p/status.sh` and
-confirm all checks pass without manual intervention.
-
-### Step 9 — Verify end-to-end
+### Step 8 — Verify end-to-end
 
 From the MacBook with VPN active:
 
 - [ ] `curl ifconfig.me` shows the apartment's public IP (not the VPS IP)
-- [ ] `ping google.com` works (DNS through T15p)
+- [ ] `ping google.com` works (DNS through T15)
 - [ ] `ssh as@10.100.0.2` connects (SSH over VPN)
 - [ ] Phone on MR550 WiFi has internet
-- [ ] Reboot T15p — all services recover automatically within ~2 minutes
+- [ ] Reboot T15 — all services recover automatically within ~2 minutes
