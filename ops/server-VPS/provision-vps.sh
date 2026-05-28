@@ -40,6 +40,8 @@ render_template() {
       -e "s|{{MACBOOK_PUBLIC_KEY}}|$MACBOOK_PUBLIC_KEY|g" \
       -e "s|{{ANDROID_PRIVATE_KEY}}|${ANDROID_PRIVATE_KEY:-}|g" \
       -e "s|{{ANDROID_PUBLIC_KEY}}|${ANDROID_PUBLIC_KEY:-}|g" \
+      -e "s|{{ANDROID2_PRIVATE_KEY}}|${ANDROID2_PRIVATE_KEY:-}|g" \
+      -e "s|{{ANDROID2_PUBLIC_KEY}}|${ANDROID2_PUBLIC_KEY:-}|g" \
       "$src"
 }
 

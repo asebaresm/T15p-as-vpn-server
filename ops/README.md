@@ -74,7 +74,9 @@ t15 status              # confirm all ✓
 ```
 
 `deploy` is always-restart: it re-renders templates, copies every file in the
-manifest to `/etc/`, reloads systemd + sysctl, restarts `t15.target`, and bounces
+manifest to `/etc/`, reloads systemd + sysctl, sets `wifi.powersave=disable` on
+every stored NM wifi connection profile (so the conf.d default applies without a
+reboot), restarts `t15.target`, and bounces
 `nftables` + `ssh`. VPN clients drop for a few seconds.
 
 ### Restart just one component
@@ -177,6 +179,7 @@ If you've lost SSH over the VPN, the apartment-side fallbacks (in order of pain)
 | `/etc/sysctl.d/99-router.conf` | `ip_forward`, rp_filter, ICMP-redirect handling |
 | `/etc/NetworkManager/conf.d/unmanaged.conf` | `wg0` + `enp0s31f6` marked NM-unmanaged |
 | `/etc/NetworkManager/conf.d/connectivity.conf` | Connectivity probe (for future LTE failover) |
+| `/etc/NetworkManager/conf.d/wifi-powersave.conf` | Disables WiFi power-save (default for new connections). `t15 deploy` also runs `nmcli connection modify` on every existing wifi connection so the setting takes effect without a reboot. |
 | `/etc/ssh/sshd_config.d/10-t15.conf` | Password auth off, keyboard-interactive off |
 | `/etc/systemd/system/t15.target` | Groups t15-lan + wg-quick@wg0 + dnsmasq |
 | `/etc/systemd/system/t15-lan.service` | Assigns 192.168.10.1/24 to enp0s31f6 |

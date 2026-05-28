@@ -42,6 +42,7 @@ MANAGED_FILES=(
   "sysctl-router.conf:/etc/sysctl.d/99-router.conf:644:copy"
   "nm-unmanaged.conf:/etc/NetworkManager/conf.d/unmanaged.conf:644:copy"
   "nm-connectivity.conf:/etc/NetworkManager/conf.d/connectivity.conf:644:copy"
+  "nm-wifi-powersave.conf:/etc/NetworkManager/conf.d/wifi-powersave.conf:644:copy"
   "sshd-hardening.conf:/etc/ssh/sshd_config.d/10-t15.conf:644:copy"
   "modules-load-wireguard.conf:/etc/modules-load.d/wireguard.conf:644:copy"
   "systemd/t15.target:/etc/systemd/system/t15.target:644:copy"
@@ -96,6 +97,8 @@ render_template() {
       -e "s|{{MACBOOK_PUBLIC_KEY}}|${MACBOOK_PUBLIC_KEY:-}|g" \
       -e "s|{{ANDROID_PRIVATE_KEY}}|${ANDROID_PRIVATE_KEY:-}|g" \
       -e "s|{{ANDROID_PUBLIC_KEY}}|${ANDROID_PUBLIC_KEY:-}|g" \
+      -e "s|{{ANDROID2_PRIVATE_KEY}}|${ANDROID2_PRIVATE_KEY:-}|g" \
+      -e "s|{{ANDROID2_PUBLIC_KEY}}|${ANDROID2_PUBLIC_KEY:-}|g" \
       "$src"
 }
 
@@ -184,6 +187,9 @@ cmd_deploy() {
   sysctl --system >/dev/null
   systemctl reload NetworkManager
 
+  log "Disabling WiFi power-save on stored connection profiles"
+  apply_wifi_powersave_to_existing_connections
+
   log "Enabling units at boot"
   systemctl enable NetworkManager-wait-online.service >/dev/null 2>&1 || true
   systemctl enable nftables.service                       >/dev/null
@@ -248,6 +254,23 @@ deploy_managed_files() {
     mv "$dest.tmp" "$dest"
     info "wrote $dest"
   done
+}
+
+# NM conf.d/wifi-powersave.conf only sets the default for *new* connections.
+# Existing connection profiles keep their stored powersave value, so we have
+# to set it explicitly on every wifi connection that's already saved.
+# Idempotent: re-running with the same value is a no-op.
+apply_wifi_powersave_to_existing_connections() {
+  command -v nmcli >/dev/null || { info "nmcli not present — skipping"; return; }
+  local name type
+  while IFS=: read -r name type; do
+    [[ "$type" == "802-11-wireless" ]] || continue
+    if nmcli connection modify "$name" 802-11-wireless.powersave 2; then
+      info "wifi.powersave=2 set on '$name'"
+    else
+      warn "failed to set powersave on '$name'"
+    fi
+  done < <(nmcli -t -f NAME,TYPE connection show)
 }
 
 apply_hardening() {

@@ -290,3 +290,146 @@ From the MacBook with VPN active:
 - [ ] `ssh as@10.100.0.2` connects (SSH over VPN)
 - [ ] Phone on MR550 WiFi has internet
 - [ ] Reboot T15 — all services recover automatically within ~2 minutes
+
+---
+
+## Adding a new VPN client (example: a second Android phone)
+
+Each client needs its own WireGuard keypair and its own `/32` inside `10.100.0.0/24`.
+Sharing a keypair across devices "works" but causes handshake flapping when both are
+online — the VPS tracks peers by public key, so it'd see them as one peer with two
+endpoints. Don't share.
+
+**IP allocation convention** (extend as needed):
+
+| IP | Role |
+|---|---|
+| `10.100.0.1` | VPS (relay) |
+| `10.100.0.2` | T15 (router + exit) |
+| `10.100.0.3` | MacBook |
+| `10.100.0.4` | Android |
+| `10.100.0.5` | Android 2 — *example below* |
+| `10.100.0.6…` | next client |
+
+Below, `ANDROID2` is the variable-name prefix and `10.100.0.5` is the new IP — substitute
+your own names/IPs throughout. Steps assume you've already bootstrapped the T15.
+
+### Step 1 — Generate the new keypair
+
+```bash
+umask 077
+wg genkey | tee /tmp/k | wg pubkey > /tmp/p
+{
+  echo "ANDROID2_PRIVATE_KEY=$(cat /tmp/k)"
+  echo "ANDROID2_PUBLIC_KEY=$(cat /tmp/p)"
+} >> .env.local
+shred -u /tmp/k /tmp/p
+chmod 600 .env.local
+```
+
+Also add the empty placeholders to [`.env.local.example`](.env.local.example) so a fresh
+clone knows about them:
+
+```
+ANDROID2_PRIVATE_KEY=
+ANDROID2_PUBLIC_KEY=
+```
+
+### Step 2 — Register the peer on the VPS
+
+Add a new `[Peer]` block to [`src/server-VPS/wg0.conf`](src/server-VPS/wg0.conf):
+
+```ini
+[Peer]
+# Android 2
+PublicKey = {{ANDROID2_PUBLIC_KEY}}
+AllowedIPs = 10.100.0.5/32
+```
+
+Wire the placeholder into both render-template functions:
+
+- [`ops/server-VPS/provision-vps.sh`](ops/server-VPS/provision-vps.sh) → `render_template`
+- [`ops/server-Lenovo-T15/t15`](ops/server-Lenovo-T15/t15) → `render_template`
+
+Same pattern as existing entries — `-e "s|{{ANDROID2_PUBLIC_KEY}}|${ANDROID2_PUBLIC_KEY:-}|g" \`.
+
+### Step 3 — Push the new config to the VPS (hot-reload, no peer drops)
+
+```bash
+set -a; source .env.local; set +a
+SSH_KEY=ops/server-VPS/hetzner/vps-ssh-key
+VPS_IP=$HETZNER_VPS_SERVER_PUBLIC_IP
+
+# Render locally and ship
+sed -e "s|{{VPS_PRIVATE_KEY}}|$VPS_PRIVATE_KEY|g" \
+    -e "s|{{T15_PUBLIC_KEY}}|$T15_PUBLIC_KEY|g" \
+    -e "s|{{MACBOOK_PUBLIC_KEY}}|$MACBOOK_PUBLIC_KEY|g" \
+    -e "s|{{ANDROID_PUBLIC_KEY}}|$ANDROID_PUBLIC_KEY|g" \
+    -e "s|{{ANDROID2_PUBLIC_KEY}}|$ANDROID2_PUBLIC_KEY|g" \
+    src/server-VPS/wg0.conf \
+  | ssh -i "$SSH_KEY" "root@$VPS_IP" \
+      'cat > /etc/wireguard/wg0.conf && chmod 600 /etc/wireguard/wg0.conf'
+
+# Hot-reload without dropping existing tunnels
+ssh -i "$SSH_KEY" "root@$VPS_IP" 'wg syncconf wg0 <(wg-quick strip wg0)'
+
+# Verify the new peer shows up (no handshake yet, that comes after client connects)
+ssh -i "$SSH_KEY" "root@$VPS_IP" 'wg show wg0'
+```
+
+`wg syncconf` is surgical: it diffs the new config against the running tunnel and applies
+only the changes. Other peers' handshakes stay intact. Don't use `systemctl restart
+wg-quick@wg0` for peer additions — it tears down all tunnels.
+
+### Step 4 — Render the client config
+
+```bash
+set -a; source .env.local; set +a
+umask 077
+cat > src/client-android/wg0-hetzner-2.conf <<EOF
+[Interface]
+PrivateKey = $ANDROID2_PRIVATE_KEY
+Address = 10.100.0.5/24
+DNS = 10.100.0.2
+
+[Peer]
+PublicKey = $VPS_PUBLIC_KEY
+AllowedIPs = 0.0.0.0/0
+Endpoint = $HETZNER_VPS_SERVER_PUBLIC_IP:51820
+PersistentKeepalive = 25
+EOF
+```
+
+The `src/client-android/wg0-*.conf` glob is already gitignored.
+
+### Step 5 — Get the config onto the device
+
+**Android (this example)** — QR code straight from the terminal:
+
+```bash
+sudo apt install -y qrencode      # one-time
+qrencode -t ansiutf8 < src/client-android/wg0-hetzner-2.conf
+```
+
+The QR appears in the terminal. On the new phone: open the WireGuard app → `+` →
+**Scan from QR code** → point camera at the screen. The terminal output encodes the
+private key — close the scrollback or `clear` afterwards.
+
+**iOS / macOS** — no QR needed; the WireGuard app imports `.conf` files directly. Render
+to `src/client-macos/<name>.conf` instead, AirDrop / `scp` it to the device, then
+double-click in the WireGuard app.
+
+### Step 6 — Verify
+
+After the new device activates the tunnel:
+
+```bash
+# On the VPS: the new peer should have a fresh handshake + traffic counters
+ssh -i ops/server-VPS/hetzner/vps-ssh-key root@$HETZNER_VPS_SERVER_PUBLIC_IP 'wg show wg0'
+
+# On the device: check the exit IP
+# (curl ifconfig.me from a browser/terminal on the device — should be the apartment's IP)
+```
+
+If the device's tunnel comes up but no handshake appears on the VPS, double-check the
+public key in the VPS's `wg0.conf` matches `ANDROID2_PUBLIC_KEY` in `.env.local`.

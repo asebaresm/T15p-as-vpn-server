@@ -157,6 +157,11 @@ These bit us at least once. Listed for next time.
 
 - **wireguard kernel module autoload races wg-quick at boot.** On some boots (especially after dirty shutdowns), wg-quick would fire before the kernel had loaded `wireguard.ko` on demand. Forced early load via `/etc/modules-load.d/wireguard.conf` (managed by `t15 deploy`).
 
+- **Intel iwlwifi power-save + multi-BSSID roaming SSIDs = ~5-minute WAN blackouts.** Building Wi-Fi networks broadcast the same SSID across multiple APs (different BSSIDs). When the T15's WiFi card was in power-save it would miss beacons, fail to roam between BSSIDs, and get stuck in an authentication-timeout loop (3 retries × ~10s × several BSSIDs ≈ 4–5 min of dead WAN). During the outage the VPN tunnel to the VPS was dead, every client lost internet, and `t15 status` looked fine because *systemd* was happy — the WiFi card was just unresponsive. The watchdog couldn't see it either.
+  - **Detection from outside**: this is exactly the scenario remote heartbeat monitoring (e.g. healthchecks.io) catches that the on-box watchdog can't.
+  - **Fix**: disable WiFi power-save. `t15 deploy` ships `/etc/NetworkManager/conf.d/wifi-powersave.conf` setting `wifi.powersave = 2` (default for new connection profiles) AND runs `nmcli connection modify '<wifi-conn>' 802-11-wireless.powersave 2` on every existing wifi connection (since the conf.d default only applies to *new* profiles). After deploy: `iw dev wlp0s20f3 get power_save` should report `off`.
+  - **Verification**: `for c in $(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="802-11-wireless"{print $1}'); do nmcli -t -g 802-11-wireless.powersave connection show "$c"; done` should print `disable` for every wifi connection.
+
 - **`set -euo pipefail` + a failing `ip -4 addr show wg0 | awk | head` pipeline silently exits the script.** `cmd_status` lost its last sections when `wg0` was missing because of this. All such interface-read pipelines are now wrapped in `{ ... } || true`.
 
 - **VPS `wg0.conf` must have `Table = off`.** Without it, `AllowedIPs = 0.0.0.0/0` on the T15 peer makes wg-quick hijack the VPS default route — you lock yourself out.
