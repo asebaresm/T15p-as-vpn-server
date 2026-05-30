@@ -129,6 +129,24 @@ sudo t15 deploy                                 # T15 side
 # scp + restart wg-quick@wg0 on the VPS
 ```
 
+### Check the vpn-health dashboard
+
+From anywhere with a browser: https://vpn-health.mydomain.tld/ (basic auth, user
+`as`, password in `.env.local` as `VPN_HEALTH_BASIC_AUTH_PASS`). Page is pushed
+from T15 every 60 s; the "last push" timestamp is your heartbeat. If it stops
+moving, the T15 isn't pushing — either the WAN is down or the snapshot timer
+is broken.
+
+Force an immediate push from the T15 (useful for debugging the dashboard
+itself, e.g. after editing `t15-snapshot.sh`):
+```bash
+sudo systemctl start t15-snapshot.service
+sudo journalctl -t t15-snapshot --since='1 min ago'
+```
+
+Setup-from-scratch / rotate the push key: see [docs/STATUS.md](../docs/STATUS.md)
+"Remote observability" section.
+
 ### Reboot safely
 
 ```bash
@@ -184,6 +202,9 @@ If you've lost SSH over the VPN, the apartment-side fallbacks (in order of pain)
 | `/etc/systemd/system/t15.target` | Groups t15-lan + wg-quick@wg0 + dnsmasq |
 | `/etc/systemd/system/t15-lan.service` | Assigns 192.168.10.1/24 to enp0s31f6 |
 | `/etc/systemd/system/t15-watchdog.{service,timer}` | Patches things systemd can't see |
+| `/etc/systemd/system/t15-snapshot.{service,timer}` | Builds + pushes the vpn-health dashboard HTML every 60 s |
+| `/usr/local/sbin/t15-snapshot.sh` | The script the snapshot timer runs (templated: VPS IP baked in at deploy) |
+| `/root/.ssh/t15-snapshot-vps-key{,.pub}` | Push-only SSH key (generated on first deploy, not removed by `t15 uninstall`) |
 | `/etc/systemd/system/{dnsmasq,wg-quick@,nftables}.service.d/10-t15.conf` | Ordering + `Restart=on-failure` drop-ins |
 | `/etc/apt/apt.conf.d/99-no-auto-reboot` | unattended-upgrades won't reboot the box |
 | `/etc/systemd/logind.conf.d/no-suspend.conf` | Lid close / idle / power button ignored |
@@ -216,6 +237,25 @@ bash ops/server-VPS/provision-vps.sh
 Credentials and SSH keys live under `ops/server-VPS/{hetzner,oracle}/`
 (gitignored). Full setup steps are in the main [README.md](../README.md)
 "Setup from Scratch".
+
+### VPS relay guard (self-heal) + health reporter
+
+`provision-vps.sh` also installs, on the VPS:
+
+| Path | Purpose |
+|---|---|
+| `/usr/local/sbin/vpn-relay-guard.sh` + `vpn-relay-guard.{service,timer}` | Re-asserts the relay routing invariants (`ip_forward`, `ip rule from 10.100.0.0/24 lookup 100`, table-100 default route, FORWARD wg0 accepts) every 60s. Idempotent; logs to `journalctl -t vpn-relay-guard` only on repair. |
+| `/usr/local/sbin/vpn-relay-health.sh` | Read-only reporter of those same invariants. Queried by the T15 dashboard over the wg tunnel via a forced-command SSH key. |
+
+Why: installing Docker (or other netfilter churn) on the VPS silently wiped the
+`ip rule`, killing the double-hop while every health check still showed green —
+see [docs/STATUS.md](../docs/STATUS.md) "Known gotchas". The guard repairs it
+within 60s; the dashboard's **"VPS relay invariants"** section makes the break
+visible. Manual check anytime:
+
+```bash
+ssh -i ops/server-VPS/hetzner/vps-ssh-key root@<VPS_IP> /usr/local/sbin/vpn-relay-health.sh
+```
 
 ---
 

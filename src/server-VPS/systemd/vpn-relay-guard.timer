@@ -1,0 +1,15 @@
+# /etc/systemd/system/vpn-relay-guard.timer — deployed by provision-vps.sh
+#
+# Fires vpn-relay-guard.service every 60s. First fire 45s after boot (gives
+# wg-quick@wg0 + Docker time to settle so we re-assert AFTER they've churned).
+
+[Unit]
+Description=VPN relay routing guard timer (every 60s)
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+Unit=vpn-relay-guard.service
+
+[Install]
+WantedBy=timers.target

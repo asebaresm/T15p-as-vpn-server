@@ -45,6 +45,9 @@ MANAGED_FILES=(
   "nm-wifi-powersave.conf:/etc/NetworkManager/conf.d/wifi-powersave.conf:644:copy"
   "sshd-hardening.conf:/etc/ssh/sshd_config.d/10-t15.conf:644:copy"
   "modules-load-wireguard.conf:/etc/modules-load.d/wireguard.conf:644:copy"
+  "t15-snapshot.sh:/usr/local/sbin/t15-snapshot.sh:755:template"
+  "systemd/t15-snapshot.service:/etc/systemd/system/t15-snapshot.service:644:copy"
+  "systemd/t15-snapshot.timer:/etc/systemd/system/t15-snapshot.timer:644:copy"
   "systemd/t15.target:/etc/systemd/system/t15.target:644:copy"
   "systemd/t15-lan.service:/etc/systemd/system/t15-lan.service:644:copy"
   "systemd/t15-watchdog.service:/etc/systemd/system/t15-watchdog.service:644:copy"
@@ -190,6 +193,12 @@ cmd_deploy() {
   log "Disabling WiFi power-save on stored connection profiles"
   apply_wifi_powersave_to_existing_connections
 
+  log "Ensuring snapshot push key (for the vpn-health dashboard)"
+  ensure_snapshot_push_key
+
+  log "Ensuring relay-check key (dashboard queries VPS relay health over wg)"
+  ensure_relay_check_key
+
   log "Enabling units at boot"
   systemctl enable NetworkManager-wait-online.service >/dev/null 2>&1 || true
   systemctl enable nftables.service                       >/dev/null
@@ -199,6 +208,7 @@ cmd_deploy() {
   systemctl enable t15-lan.service                       >/dev/null
   systemctl enable t15.target                            >/dev/null
   systemctl enable t15-watchdog.timer                    >/dev/null
+  systemctl enable t15-snapshot.timer                    >/dev/null
 
   log "Verifying systemd dependency graph (no cycles, no fatal warnings)"
   verify_units || die "refusing to restart services. Fix the units in src/ and re-run 'sudo $TOOL_NAME deploy'."
@@ -209,6 +219,7 @@ cmd_deploy() {
   systemctl stop  t15.target 2>/dev/null || true
   systemctl start t15.target
   systemctl restart t15-watchdog.timer
+  systemctl restart t15-snapshot.timer
 
   echo
   log "Deploy complete. Run '$TOOL_NAME status' to verify."
@@ -222,6 +233,8 @@ verify_units() {
     t15-lan.service
     t15-watchdog.service
     t15-watchdog.timer
+    t15-snapshot.service
+    t15-snapshot.timer
     wg-quick@wg0.service
     dnsmasq.service
     nftables.service
@@ -260,6 +273,39 @@ deploy_managed_files() {
 # Existing connection profiles keep their stored powersave value, so we have
 # to set it explicitly on every wifi connection that's already saved.
 # Idempotent: re-running with the same value is a no-op.
+ensure_snapshot_push_key() {
+  local key=/root/.ssh/t15-snapshot-vps-key
+  mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  if [[ -f "$key" ]]; then
+    info "push key present at $key"
+  else
+    ssh-keygen -t ed25519 -N '' -f "$key" -C 't15-snapshot-push' -q
+    chmod 600 "$key"
+    info "generated $key"
+  fi
+  # Always print the pubkey so the user can copy + authorize on VPS.
+  info "VPS authorization line: pass the path below to setup-status-dashboard.sh as arg 3:"
+  info "  ${key}.pub  →  $(cat "${key}.pub")"
+}
+
+# Read-only key the dashboard uses to query VPS relay health over the wg tunnel.
+# Authorize on the VPS with a forced command (read-only, can't run anything else):
+#   echo 'command="/usr/local/sbin/vpn-relay-health.sh",restrict <pubkey>' \
+#     >> /root/.ssh/authorized_keys   (on the VPS)
+ensure_relay_check_key() {
+  local key=/root/.ssh/t15-relay-check-key
+  mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  if [[ -f "$key" ]]; then
+    info "relay-check key present at $key"
+  else
+    ssh-keygen -t ed25519 -N '' -f "$key" -C 't15-relay-check' -q
+    chmod 600 "$key"
+    info "generated $key"
+  fi
+  info "VPS authorization (forced-command, read-only) — add to VPS /root/.ssh/authorized_keys:"
+  info "  command=\"/usr/local/sbin/vpn-relay-health.sh\",restrict $(cat "${key}.pub")"
+}
+
 apply_wifi_powersave_to_existing_connections() {
   command -v nmcli >/dev/null || { info "nmcli not present — skipping"; return; }
   local name type
@@ -444,6 +490,16 @@ cmd_status() {
     _mark_fail "t15-watchdog.timer not active"
   fi
 
+  _hdr "Snapshot push (dashboard)"
+  if systemctl is-active --quiet t15-snapshot.timer; then
+    _ok "t15-snapshot.timer active"
+    local last_push
+    last_push=$(journalctl -t t15-snapshot --no-pager -n 1 2>/dev/null | tail -1)
+    [[ -n "$last_push" ]] && info "last journal: $last_push"
+  else
+    _warn "t15-snapshot.timer not active (dashboard won't update)"
+  fi
+
   echo
   echo "────────────────────────────────────────"
   if (( degraded == 0 )); then
@@ -463,6 +519,7 @@ cmd_logs() {
   else
     journalctl -fu t15-lan.service \
                  -u t15-watchdog.service \
+                 -u t15-snapshot.service \
                  -u wg-quick@wg0.service \
                  -u dnsmasq.service \
                  -u nftables.service
@@ -472,6 +529,7 @@ cmd_logs() {
 # ── Subcommand: uninstall ───────────────────────────────────────────────────
 cmd_uninstall() {
   log "Stopping units"
+  systemctl stop t15-snapshot.timer    2>/dev/null || true
   systemctl stop t15-watchdog.timer    2>/dev/null || true
   systemctl stop t15.target            2>/dev/null || true
   systemctl stop t15-lan.service       2>/dev/null || true
@@ -479,7 +537,7 @@ cmd_uninstall() {
   systemctl stop wg-quick@wg0.service   2>/dev/null || true
 
   log "Disabling units"
-  systemctl disable t15-watchdog.timer t15.target t15-lan.service \
+  systemctl disable t15-snapshot.timer t15-watchdog.timer t15.target t15-lan.service \
                     dnsmasq.service wg-quick@wg0.service nftables.service \
                     2>/dev/null || true
 
@@ -492,12 +550,18 @@ cmd_uninstall() {
   rm -f /etc/systemd/system/t15-lan.service
   rm -f /etc/systemd/system/t15-watchdog.service
   rm -f /etc/systemd/system/t15-watchdog.timer
+  rm -f /etc/systemd/system/t15-snapshot.service
+  rm -f /etc/systemd/system/t15-snapshot.timer
+  rm -f /usr/local/sbin/t15-snapshot.sh
   rm -rf /etc/systemd/system/dnsmasq.service.d/10-t15.conf
   rm -rf /etc/systemd/system/wg-quick@.service.d/10-t15.conf
   rm -rf /etc/systemd/system/nftables.service.d/10-t15.conf
   rmdir --ignore-fail-on-non-empty /etc/systemd/system/dnsmasq.service.d 2>/dev/null || true
   rmdir --ignore-fail-on-non-empty /etc/systemd/system/wg-quick@.service.d 2>/dev/null || true
   rmdir --ignore-fail-on-non-empty /etc/systemd/system/nftables.service.d 2>/dev/null || true
+  # NOTE: /root/.ssh/t15-snapshot-vps-key is intentionally NOT removed —
+  # if you re-bootstrap you'll want to keep the same key (avoid re-authorizing
+  # on the VPS). Remove manually if you want a clean slate.
 
   log "Restoring original /etc/ files"
   local entry _src dest _rest

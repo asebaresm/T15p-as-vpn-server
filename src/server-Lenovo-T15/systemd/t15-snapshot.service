@@ -1,0 +1,13 @@
+# /etc/systemd/system/t15-snapshot.service — managed by t15
+#
+# Renders the VPN-health HTML snapshot and pushes it to the VPS dashboard.
+# Triggered every 60 s by t15-snapshot.timer. Non-fatal: failure to push
+# (e.g. WAN down) is logged via journald and the timer continues firing.
+
+[Unit]
+Description=T15 VPN-health snapshot push
+After=NetworkManager-wait-online.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/t15-snapshot.sh

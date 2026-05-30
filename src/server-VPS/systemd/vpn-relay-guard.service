@@ -1,0 +1,13 @@
+# /etc/systemd/system/vpn-relay-guard.service — deployed by provision-vps.sh
+#
+# Re-asserts the VPS relay routing invariants (see vpn-relay-guard.sh).
+# Oneshot, fired every 60s by vpn-relay-guard.timer.
+
+[Unit]
+Description=VPN relay routing guard (re-assert ip rule / route / forward)
+After=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vpn-relay-guard.sh

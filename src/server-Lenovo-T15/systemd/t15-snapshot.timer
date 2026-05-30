@@ -1,0 +1,15 @@
+# /etc/systemd/system/t15-snapshot.timer — managed by t15
+#
+# Fires t15-snapshot.service every 60 seconds. First fire 30 s after boot
+# (gives wg-quick + dnsmasq time to come up so the first snapshot is meaningful).
+
+[Unit]
+Description=T15 VPN-health snapshot timer (every 60 s)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+Unit=t15-snapshot.service
+
+[Install]
+WantedBy=timers.target
