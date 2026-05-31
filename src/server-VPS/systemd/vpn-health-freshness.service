@@ -1,0 +1,8 @@
+# /etc/systemd/system/vpn-health-freshness.service — deployed by setup-status-dashboard.sh
+# Regenerates the VPS-authored freshness banner for the vpn-health dashboard.
+[Unit]
+Description=vpn-health freshness banner (VPS-side staleness check)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vpn-health-freshness.sh

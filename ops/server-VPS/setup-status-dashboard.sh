@@ -205,6 +205,11 @@ server {
     location / {
         auth_basic           "vpn-health";
         auth_basic_user_file $HTPASSWD;
+        # SSI lets index.html (pushed by the T15) include freshness.html
+        # (written by the VPS every 30s). The VPS-authored fragment stays live
+        # even when the T15 stops pushing, so a frozen page still shows an
+        # honest, reddening staleness alarm at the top.
+        ssi on;
         try_files \$uri \$uri/ =404;
     }
 }
@@ -229,6 +234,23 @@ the VPS yet, or the t15-snapshot.timer hasn't been deployed/enabled.</pre>
 </body></html>
 HTML
          fi"
+
+# ── Step 7b: VPS-side freshness banner (staleness check) ─────────────────────
+# The dashboard is push-only: when the T15 stops pushing, index.html freezes
+# but still shows all-green. This VPS-side timer re-reads index.html's mtime
+# every 30s and writes freshness.html (SSI-included at the top of the page), so
+# a frozen dashboard shows an honest, reddening "STALE — T15 is DOWN" banner.
+log "[7b/8] VPS freshness banner (timer + SSI fragment)"
+cat "$ROOT_DIR/src/server-VPS/vpn-health-freshness.sh" \
+  | ssh_vps "cat > /usr/local/sbin/vpn-health-freshness.sh && chmod 755 /usr/local/sbin/vpn-health-freshness.sh"
+cat "$ROOT_DIR/src/server-VPS/systemd/vpn-health-freshness.service" \
+  | ssh_vps "cat > /etc/systemd/system/vpn-health-freshness.service"
+cat "$ROOT_DIR/src/server-VPS/systemd/vpn-health-freshness.timer" \
+  | ssh_vps "cat > /etc/systemd/system/vpn-health-freshness.timer"
+ssh_vps "systemctl daemon-reload && systemctl enable --now vpn-health-freshness.timer
+         systemctl start vpn-health-freshness.service
+         # Seed an initial fragment so SSI has something to include immediately.
+         test -s /var/www/vpn-health/freshness.html && echo '    freshness banner active' || echo '    freshness banner seeded'"
 
 # ── Step 8: optional push-key authorization ─────────────────────────────────
 log "[8/8] T15 push-key authorization"

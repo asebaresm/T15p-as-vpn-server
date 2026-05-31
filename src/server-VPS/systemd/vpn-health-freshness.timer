@@ -1,0 +1,13 @@
+# /etc/systemd/system/vpn-health-freshness.timer — deployed by setup-status-dashboard.sh
+# Refresh the staleness banner every 30s (faster than the 60s push so the age
+# reading is never more than ~30s behind reality).
+[Unit]
+Description=vpn-health freshness banner timer (every 30s)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=vpn-health-freshness.service
+
+[Install]
+WantedBy=timers.target

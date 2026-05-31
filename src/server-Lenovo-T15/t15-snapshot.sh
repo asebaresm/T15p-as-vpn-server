@@ -260,9 +260,11 @@ summary:hover { color: #fff; }
 </style>
 </head>
 <body>
+<!--#include file="freshness.html"-->
 <h1>vpn-health · $HOSTNAME</h1>
 <p class="meta">last push: <strong>$NOW_HUMAN</strong> · page auto-refreshes every 30 s.
-If the push timestamp stops moving, the snapshot timer or the WAN on $HOSTNAME has stalled.</p>
+The green/red FRESHNESS banner above is written by the VPS, not the T15 — so it
+stays live and turns red even when this whole page is a frozen snapshot.</p>
 
 <h2>Heartbeats</h2>
 <pre>
